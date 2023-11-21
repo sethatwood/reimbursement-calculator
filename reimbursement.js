@@ -12,52 +12,86 @@ function parseDate(dateString) {
   return new Date(year + 2000, month - 1, day);
 }
 
-// Determine if a given date is a travel day
-function isTravelDay(date, startDate, endDate) {
-  return date.getTime() === startDate.getTime() || date.getTime() === endDate.getTime();
-}
-
-// Calculate reimbursement for each day of a project
-function calculateDailyReimbursement(project, date) {
-  const rateType = isTravelDay(date, parseDate(project.startDate), parseDate(project.endDate)) ? 'travel' : 'full';
-  return rates[project.cityType][rateType];
-}
-
 // Main Calculation Functions
 
-// Calculate the total reimbursement for a single project
-function calculateProjectReimbursement(project, detailedBreakdown) {
-  const start = parseDate(project.startDate);
-  const end = parseDate(project.endDate);
-  let reimbursement = 0;
+// Process projects to create a map of dates with their types and city costs
+function createDatesMap(projects) {
+  const datesMap = new Map();
 
-  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-    const dailyReimbursement = calculateDailyReimbursement(project, d);
-    reimbursement += dailyReimbursement;
+  // Mark first and last days of each project as travel days, others as full
+  projects.forEach(project => {
+    const start = parseDate(project.startDate);
+    const end = parseDate(project.endDate);
 
-    // Add details to the breakdown for transparency
-    const formattedDate = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear() - 2000}`;
-    detailedBreakdown.push(`${formattedDate}: ${dailyReimbursement} (${project.cityType.toUpperCase()} city, ${dailyReimbursement === rates[project.cityType].travel ? 'Travel' : 'Full'} day)`);
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const formattedDate = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear() - 2000}`;
+      let dayType = (d.getTime() === start.getTime() || d.getTime() === end.getTime()) ? 'travel' : 'full';
+
+      datesMap.set(formattedDate, { dayType, cityType: project.cityType });
+    }
+  });
+
+  // Adjust for consecutive or overlapping projects
+  for (let i = 0; i < projects.length - 1; i++) {
+    const end = parseDate(projects[i].endDate);
+    const nextStart = parseDate(projects[i + 1].startDate);
+
+    // Check if projects are consecutive or overlapping
+    if (end.getTime() >= nextStart.getTime() - 86400000) {
+      const endFormatted = `${end.getMonth() + 1}/${end.getDate()}/${end.getFullYear() - 2000}`;
+      const nextStartFormatted = `${nextStart.getMonth() + 1}/${nextStart.getDate()}/${nextStart.getFullYear() - 2000}`;
+
+      datesMap.set(endFormatted, { dayType: 'full', cityType: projects[i].cityType });
+      datesMap.set(nextStartFormatted, { dayType: 'full', cityType: projects[i + 1].cityType });
+    }
   }
 
-  return reimbursement;
+  return datesMap;
+}
+
+// Calculate the total reimbursement from the dates map
+function calculateTotalReimbursement(datesMap, detailedBreakdown) {
+  let totalReimbursement = 0;
+
+  datesMap.forEach((value, key) => {
+    const { dayType, cityType } = value;
+    const dailyReimbursement = rates[cityType][dayType];
+    totalReimbursement += dailyReimbursement;
+
+    // Add details to the breakdown for transparency
+    detailedBreakdown.push(`${key}: ${dailyReimbursement} (${cityType.toUpperCase()} city, ${dayType.charAt(0).toUpperCase() + dayType.slice(1)} day)`);
+  });
+
+  return totalReimbursement;
+}
+
+// Adjust the days adjacent to gaps between projects to be travel days
+function adjustForGaps(projects, datesMap) {
+  let previousProjectEnd = null;
+
+  projects.forEach(project => {
+    const start = parseDate(project.startDate);
+    const end = parseDate(project.endDate);
+
+    // Check for a gap before the start of the current project
+    if (previousProjectEnd && (start.getTime() > previousProjectEnd.getTime() + 86400000)) {
+      const dayBeforeStart = new Date(start.getTime() - 86400000);
+      const formattedDayBefore = `${dayBeforeStart.getMonth() + 1}/${dayBeforeStart.getDate()}/${dayBeforeStart.getFullYear() - 2000}`;
+      if (datesMap.has(formattedDayBefore)) {
+        datesMap.set(formattedDayBefore, { dayType: 'travel', cityType: datesMap.get(formattedDayBefore).cityType });
+      }
+    }
+
+    previousProjectEnd = new Date(end);
+  });
 }
 
 // Calculate the total reimbursement for a set of projects
 function calculateReimbursement(projects) {
-  let totalReimbursement = 0;
-  let previousProjectEnd = null;
   let detailedBreakdown = [];
-
-  projects.forEach(project => {
-    // Adjust reimbursement if projects are consecutive
-    if (previousProjectEnd && parseDate(project.startDate).getTime() === previousProjectEnd.getTime() + 86400000) {
-      totalReimbursement -= rates[projects[projects.indexOf(project) - 1].cityType].travel;
-    }
-
-    totalReimbursement += calculateProjectReimbursement(project, detailedBreakdown);
-    previousProjectEnd = parseDate(project.endDate);
-  });
+  const datesMap = createDatesMap(projects);
+  adjustForGaps(projects, datesMap);
+  const totalReimbursement = calculateTotalReimbursement(datesMap, detailedBreakdown);
 
   return { totalReimbursement, detailedBreakdown };
 }
@@ -85,6 +119,7 @@ function calculateReimbursements() {
   projectSets.forEach((projects, index) => {
     const { totalReimbursement, detailedBreakdown } = calculateReimbursement(projects);
     output += `Set ${index + 1}: Total Reimbursement = $${totalReimbursement}\n`;
+    output += 'Detailed Breakdown:\n';
     output += detailedBreakdown.join('\n') + '\n\n';
   });
 
